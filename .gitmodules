@@ -1,8 +1,8 @@
-[submodule "submodules/C0-microSD-utilities"]
-	path = submodules/C0-microSD-utilities
-	url = ../../signaloid/C0-microSD-utilities.git
+[submodule "submodules/Signaloid-Compute-Module-Utilities"]
+	path = submodules/Signaloid-Compute-Module-Utilities
+	url = ../../signaloid/Signaloid-Compute-Module-Utilities.git
 	branch = main
 [submodule "submodules/signaloid-python"]
 	path = submodules/signaloid-python
-	url = ../../signaloid/signaloid-python.git
+	url = ../../signaloid/signaloid-data-toolkit.git
 	branch = main

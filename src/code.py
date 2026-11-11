@@ -19,63 +19,35 @@
 #   DEALINGS IN THE SOFTWARE.
 
 
+import gc
 import struct
 
 import board
 import busio
 from microcontroller import Pin
 
-from c0microsd.interface import C0microSDSignaloidSoCInterfaceSDSPI
+from compute_module import ComputeModule
 from signaloid.circuitpython.plot_wrapper import plot
+from signaloid.distributional.dirac_delta import DiracDelta
 from signaloid.distributional.distributional import DistributionalValue
-from signaloid.distributional_information_plotting.plot_histogram_dirac_deltas import \
-    PlotData
+from signaloid.distributional_information_plotting import (
+    plot_histogram_dirac_deltas,
+)
 
 
 class APP_CONFIG:
     """Application configuration.
 
     This class contains the configuration for the application, including the
-    pin assignments for the SPI interface and the SPI baudrate.
+    chip-select pin of the SD slot and the SPI baudrate.
     """
-    PIN_MOSI: Pin = board.SD_MOSI
-    PIN_MISO: Pin = board.SD_MISO
-    PIN_CLK: Pin = board.SD_SCK
     PIN_SD_CS: Pin = board.SD_CS
     SPI_BAUDRATE: int = 5000000
-    SPI_PHASE: int = 0
-    SPI_POLARITY: int = 0
     SD_REPEAT_TIMEOUT: int = 1000
     DOUBLE_PRECISION: bool = False
     PLOTTING_RESOLUTION: int = 32
 
 
-class Device:
-    def __init__(self):
-        # Initialize SPI
-        self.spi = busio.SPI(
-            clock=APP_CONFIG.PIN_CLK,
-            MOSI=APP_CONFIG.PIN_MOSI,
-            MISO=APP_CONFIG.PIN_MISO,
-        )
-        while not self.spi.try_lock():
-            pass
-        self.spi.configure(
-            baudrate=APP_CONFIG.SPI_BAUDRATE,
-            phase=APP_CONFIG.SPI_PHASE,
-            polarity=APP_CONFIG.SPI_POLARITY
-        )
-        self.spi.unlock()
-
-        # Initialize the C0-microSD interface
-        self.C0_microSD: C0microSDSignaloidSoCInterfaceSDSPI = C0microSDSignaloidSoCInterfaceSDSPI(
-            spi=self.spi,
-            cs_pin=APP_CONFIG.PIN_SD_CS,
-            timeout=APP_CONFIG.SD_REPEAT_TIMEOUT
-        )
-
-
-kCalculateNoCommand = 0
 kCalculateAddition = 1
 kCalculateSubtraction = 2
 kCalculateMultiplication = 3
@@ -88,82 +60,29 @@ calculation_commands = {
     "div": kCalculateDivision,
 }
 
+USAGE = (
+    "Usage: <add|sub|mul|div> <A> <B>\n"
+    "A and B are floats (1.5), values with uncertainty (2.0(5)),\n"
+    "or Ux strings."
+)
 
-def pack_floats(floats: list[float], size: int, double_precision: bool = True) -> bytes:
+
+def init_spi() -> busio.SPI:
     """
-    Pack a list of floats to a zero-padded bytes buffer of length size
+    Initializes the SPI bus of the SD slot.
 
-    :param floats: List of floats to be packed
-    :param size: Size of target buffer
-    :param double_precision: If the floats are in double precision representation
+    SD-over-SPI uses SPI mode 0, the default of `configure()`. The SD driver
+    of `signaloid_utilities` identifies the card at 400 kHz, and then returns
+    the bus to the baudrate set here.
 
-    :return: The padded bytes buffer
+    :return: The configured SPI bus.
     """
-    format_str = f"{len(floats)}{'d' if double_precision else 'f'}"
-    buffer = struct.pack(format_str, *floats)
-
-    # Pad the buffer with zeros
-    if len(buffer) < size:
-        buffer += bytes(size - len(buffer))
-    elif len(buffer) > size:
-        raise ValueError(
-            f"Buffer length exceeds {size} bytes after packing floats."
-        )
-    return buffer
-
-
-def unpack_floats(byte_buffer: bytes, count: int, double_precision: bool = True) -> list[int]:
-    """
-    This function unpacks 'count' number of single or double precision
-    floating-point numbers from the given byte buffer. It checks if the
-    buffer has enough data to unpack.
-
-    :param byte_buffer: A bytes object containing the binary data.
-    :param count: The number of floats to unpack.
-    :param double_precision: If the floats are in double precision representation
-
-    :return A list of unpacked floating-point values.
-    """
-
-    # 4 bytes for each single-precision float
-    # 8 bytes for each double-precision float
-    float_size = 8 if double_precision else 4
-
-    # Check if the buffer has enough bytes to unpack the requested
-    # number of floats
-    expected_size = float_size * count
-    if len(byte_buffer) < expected_size:
-        raise ValueError(
-            f"Buffer too small: expected at least {expected_size} bytes, \
-                got {len(byte_buffer)} bytes.")
-
-    # Unpack the 'count' number of floats
-    format_string = f"{count}{'d' if double_precision else 'f'}"
-    floats = struct.unpack(format_string, byte_buffer[:expected_size])
-
-    return list(floats)
-
-
-def pack_unsigned_integers(uint: list[int], size: int) -> bytes:
-    """
-    Pack a list of unsigned integers to a zero-padded bytes.
-    buffer of length size
-
-    :param uint: List of unsigned integers to be packed
-    :param size: Size of target buffer
-
-    :return: The padded bytes buffer
-    """
-    buffer = struct.pack(f"<{len(uint)}I", *uint)
-
-    # Pad the buffer with zeros
-    if len(buffer) < size:
-        buffer += bytes(size - len(buffer))
-    elif len(buffer) > size:
-        raise ValueError(
-            f"Buffer length exceeds {size} bytes after packing doubles."
-        )
-    return buffer
+    spi = board.SD_SPI()
+    while not spi.try_lock():
+        pass
+    spi.configure(baudrate=APP_CONFIG.SPI_BAUDRATE)
+    spi.unlock()
+    return spi
 
 
 def parse_tolerance_value(value_with_uncertainty: str) -> tuple[float, float]:
@@ -210,31 +129,111 @@ def parse_tolerance_value(value_with_uncertainty: str) -> tuple[float, float]:
     return (min_value, max_value)
 
 
+def value_to_bytes(value: str, double_precision: bool) -> bytes:
+    """
+    Converts one input value to the bytes the Calculator application expects.
+
+    :param value: A float ("1.5"), a value with uncertainty in the concise
+                  form "X.Y(Z)", or a Ux string.
+    :param double_precision: If distributions use double precision positions.
+
+    :raises ValueError: when the value cannot be parsed.
+
+    :return: A single-precision float, or Ux binary data.
+    """
+    if "Ux" in value:
+        distribution = DistributionalValue.parse(value)
+        if distribution is None:
+            raise ValueError(f"Cannot parse Ux string: {value}")
+        return bytes(distribution)
+
+    if "(" in value:
+        # The Calculator application treats an input with two equally
+        # weighted Dirac deltas, at the minimum and the maximum, as a uniform
+        # distribution between them.
+        min_value, max_value = parse_tolerance_value(value)
+        distribution = DistributionalValue(
+            particle_value=(min_value + max_value) / 2,
+            dirac_deltas=[
+                DiracDelta(position=min_value, mass=0.5),
+                DiracDelta(position=max_value, mass=0.5),
+            ],
+            double_precision=double_precision,
+        )
+        return bytes(distribution)
+
+    return struct.pack("<f", float(value))
+
+
+def build_input_buffer(values: list[str], double_precision: bool) -> bytes:
+    """
+    Packs the input values in the format of the Calculator application.
+
+    The format is a uint32 count of values, followed by a uint32 size and the
+    bytes of each value.
+
+    :param values: The input values, see `value_to_bytes`.
+    :param double_precision: If distributions use double precision positions.
+
+    :return: The input buffer.
+    """
+    buffer = struct.pack("<I", len(values))
+    for value in values:
+        value_bytes = value_to_bytes(value, double_precision)
+        buffer += struct.pack("<I", len(value_bytes)) + value_bytes
+    return buffer
+
+
+def read_result(compute_module: ComputeModule) -> bytes:
+    """
+    Reads the result of the Calculator application.
+
+    The Calculator application writes a uint32 count of values (one), then
+    the uint32 size and the bytes of the value. Reading less than an SD block
+    takes the same transfer as reading a whole block, so the first read takes
+    one block, and a second read follows only for a longer result.
+
+    :param compute_module: The compute module that ran the calculation.
+
+    :raises RuntimeError: when the Calculator application returned no values.
+
+    :return: The bytes of the value, in Ux binary format.
+    """
+    interface = compute_module.interface
+    result = interface.read_output_buffer(interface.sd.block_size)
+    count, size = struct.unpack("<II", result[0:8])
+    if count == 0:
+        raise RuntimeError(
+            "The Calculator application returned no values. "
+            "Check the inputs."
+        )
+    if 8 + size > len(result):
+        result = interface.read_output_buffer(8 + size)
+    return result[8:8 + size]
+
+
 def main():
     # Clear the screen
     print("\n"*10)
-
-    # Initialize the device
-    d = Device()
 
     # Get the default display root group (the terminal), so that we can
     # restore it later
     default_display_root_group = board.DISPLAY.root_group
 
-    # Try to get the status of the C0-microSD, if it is not in SoC mode, then
-    # raise an exception and exit the program
+    # Detect the compute module in the SD slot and start its device
+    # application. Exit if there is no supported compute module.
     try:
-        d.C0_microSD.get_status()
-        print(d.C0_microSD)
-
-        if d.C0_microSD.configuration != "soc":
-            raise RuntimeError(
-                "Error: The C0-microSD is not in SoC mode. "
-                "Switch to SoC mode and try again."
-            )
+        compute_module = ComputeModule(
+            spi=init_spi(),
+            cs_pin=APP_CONFIG.PIN_SD_CS,
+            timeout=APP_CONFIG.SD_REPEAT_TIMEOUT,
+        )
     except Exception as e:
         print(e)
         return
+
+    print(f"Found a Signaloid {compute_module.name}.")
+    print(USAGE)
 
     # Main loop: Continue to ask for commands until the user enters 'q'
     while True:
@@ -243,51 +242,39 @@ def main():
 
             # Ask the user for a command
             command = input("Give me a command...\n")
-            args_command, args_argument_a, args_argument_b = command.split(" ")
+            arguments = command.split()
+            if len(arguments) != 3 or arguments[0] not in calculation_commands:
+                raise ValueError(USAGE)
 
-            # Parse inputs
-            arg_a_min, arg_a_max = parse_tolerance_value(args_argument_a)
-            arg_b_min, arg_b_max = parse_tolerance_value(args_argument_b)
-
-            print("Sending parameters to C0-microSD...")
-            data = pack_floats(
-                [arg_a_min, arg_a_max, arg_b_min, arg_b_max],
-                d.C0_microSD.MOSI_BUFFER_SIZE_BYTES,
-                double_precision=APP_CONFIG.DOUBLE_PRECISION
+            input_buffer = build_input_buffer(
+                arguments[1:],
+                double_precision=APP_CONFIG.DOUBLE_PRECISION,
             )
-            d.C0_microSD.write_signaloid_soc_MOSI_buffer(data)
 
-            # Calculate result
-            result_buffer = d.C0_microSD.calculate_command(
-                calculation_commands[args_command])
-
-            # Interpret and remove the first 4 bytes as an unsigned integer
-            returned_bytes = struct.unpack("I", result_buffer[:4])[0]
-
-            # Keep only needed bytes in buffer
-            result_buffer = result_buffer[4:]
-            result_buffer = result_buffer[:returned_bytes]
+            print(f"Calculating on the {compute_module.name}...")
+            compute_module.run(
+                calculation_commands[arguments[0]], input_buffer
+            )
 
             print("Parsing distribution.")
             distribution = DistributionalValue.parse(
-                result_buffer,
-                double_precision=APP_CONFIG.DOUBLE_PRECISION
+                read_result(compute_module),
+                double_precision=APP_CONFIG.DOUBLE_PRECISION,
             )
 
             if distribution is None:
                 print("Cannot parse resulting Ux bytes.")
-                return
+            else:
+                print(distribution)
 
-            print(distribution)
-
-            print(f"Plotting {command}")
-            plot(
-                plot_data=PlotData(
-                    distribution,
-                    plotting_resolution=APP_CONFIG.PLOTTING_RESOLUTION,
-                ),
-                plot_name=command
-            )
+                print(f"Plotting {command}")
+                plot(
+                    plot_data=plot_histogram_dirac_deltas.PlotData(
+                        distribution,
+                        plotting_resolution=APP_CONFIG.PLOTTING_RESOLUTION,
+                    ),
+                    plot_name=command
+                )
         except Exception as e:
             print(
                 f"An error occurred while calculating: \n{e} \nAborting.",
@@ -298,6 +285,13 @@ def main():
 
         # Restore the default display root group (the terminal)
         board.DISPLAY.root_group = default_display_root_group
+
+        # Free the plot right away. CircuitPython grows its heap in separate
+        # areas and returns an area to the system only once it is empty. If
+        # the plot stayed uncollected, the objects of the next command could
+        # land in the area that holds it, and keep that memory from the next
+        # plot. After a few plots, there would be no memory left for one.
+        gc.collect()
 
         if res == 'q':
             return
