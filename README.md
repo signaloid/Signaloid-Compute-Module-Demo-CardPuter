@@ -3,7 +3,7 @@ This is a demo [CircuitPython](https://circuitpython.org/) host application on t
 
 https://github.com/user-attachments/assets/15ec10e5-6ba8-48a0-8c9f-bce33e0dc572
 
-This demo application supports the following arithmetic operations of two uniform distributions:
+This demo application supports the following arithmetic operations of two distributions (see [Host application](#host-application) for the input forms):
 - Addition
 - Subtraction
 - Multiplication
@@ -72,13 +72,13 @@ make
 ```
 
 This command will do the following:
-1. Initialize & update all submodules.
+1. Initialize the submodules, and check them out at the commits this repository records (`git submodule update --init --recursive`). It does not delete the submodule folders, so uncommitted changes in them stay.
 2. Create the `CircuitPythonLibs/` folder, where the [Adafruit CircuitPython bundle](https://github.com/adafruit/Adafruit_CircuitPython_Bundle) and the [Community CircuitPython bundle](https://github.com/adafruit/CircuitPython_Community_Bundle) libraries are downloaded and extracted, together with the CircuitPython `mpy-cross` compiler for your computer.
 3. Create the `src/lib/` folder, where the bundle libraries are symlinked to, and where the Signaloid libraries are compiled to `.mpy` files. Compiled libraries take much less memory on the CardPuter than `.py` files, which the CardPuter would have to compile itself.
 
 The `Makefile` downloads `mpy-cross` for Linux (x86-64, ARM64, and Raspberry Pi) and for macOS on Apple silicon. On other platforms, set the `MPY_CROSS_URL` variable to a `mpy-cross` build for CircuitPython `10.3.1`.
 
-If you change a library in the `submodules` folder, run `make libraries` to compile the Signaloid libraries again, without cloning the submodules again.
+If you change a library in the `submodules` folder, run `make libraries` to compile the Signaloid libraries again, without downloading the CircuitPython bundles again.
 
 ### Copy the CircuitPython application to the CardPuter
 To copy the CircuitPython application to the CardPuter, run this command from the `root` folder:
@@ -99,18 +99,18 @@ To clean the project, run this command from the `root` folder:
 ```sh
 make clean
 ```
-This command will delete the `CircuitPythonLibs/`, and the `src/lib/` folders.
+This command will delete the `CircuitPythonLibs/`, and the `src/lib/` folders. It does not touch the submodules.
 
 ### Clean the CardPuter
 To clean the CardPuter, run this command from the `root` folder:
 ```sh
 make clean-device
 ```
-This command will delete all files and folders from the CardPuter, and will create a new "Hello World" `code.py` file. Make sure that you have mounted your CardPuter to your computer and that the mount path is correctly specified at the `DEVICE` variable in the `Makefile` (default is `/run/media/<user>/CIRCUITPY`).
+This command will delete all files and folders from the CardPuter, except `boot_out.txt` and hidden files and folders (names that start with `.`), and will create a new "Hello World" `code.py` file. `make sync` and `make live-sync` run it first. It refuses to run unless `DEVICE` is set and `$(DEVICE)/boot_out.txt` exists, which CircuitPython writes to the drive. Make sure that you have mounted your CardPuter to your computer and that the mount path is correctly specified at the `DEVICE` variable in the `Makefile` (default is `/run/media/<user>/CIRCUITPY`).
 
 ## Host application
 When it starts, the host application detects the compute module in the microSD card slot, prints its name, and starts its device application. It then parses commands with two input arguments. Each argument can be:
-- A float, e.g. `1.5`.
+- A float, e.g. `1.5`. The Calculator application on the compute module turns it into a Gaussian distribution with that mean and a standard deviation of 0.1.
 - A uniform distribution, represented in the [concise form of uncertainty
 notation](https://physics.nist.gov/cgi-bin/cuu/Info/Constants/definitions.html#:~:text=A%20more%20concise%20form%20of,digits%20of%20the%20quoted%20result.&text=See%20Uncertainty%20of%20Measurement%20Results), i.e., `X.Y(Z)`.
 - A [Ux string](https://docs.signaloid.io/docs/uxhw-api/ux-data-format/).
