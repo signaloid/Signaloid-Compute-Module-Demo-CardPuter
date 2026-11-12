@@ -79,8 +79,6 @@ all: bundle
 # Bundle the host application and CircuitPython libraries.
 bundle: clean
 	@echo "Bundling files to project"
-	rm -rf $(ROOT_DIR)/submodules/Signaloid-Compute-Module-Utilities
-	rm -rf $(ROOT_DIR)/submodules/signaloid-python
 	git submodule update --init --recursive
 	@test -n "$(MPY_CROSS_URL)" || { echo "No CircuitPython mpy-cross for $(MPY_CROSS_PLATFORM). Set MPY_CROSS_URL to one from $(MPY_CROSS_URL_PREFIX)/"; exit 1; }
 	mkdir -p $(CIRCUITPYTHON_LIBS_DIR)
@@ -99,13 +97,16 @@ bundle: clean
 	$(MAKE) libraries
 
 # Compile the Signaloid libraries to .mpy files in src/lib. Run it again after
-# changing a library in the submodules.
+# changing a library in the submodules. The desktop-only plot_wrapper.py (it
+# needs matplotlib) and sample_generator.py are skipped.
 libraries:
 	@echo "Compiling the Signaloid libraries to .mpy files"
 	rm -rf $(ROOT_DIR)/src/lib/signaloid_utilities $(ROOT_DIR)/src/lib/signaloid
 	for library in $(SIGNALOID_LIBRARIES); do \
 		( cd $(ROOT_DIR)/submodules/$${library%%:*} && \
-		find -L $${library#*:} -name '*.py' -not -name '*_test.py' | \
+		find -L $${library#*:} -name '*.py' -not -name '*_test.py' \
+			-not -path '*/distributional_information_plotting/plot_wrapper.py' \
+			-not -name sample_generator.py | \
 		while read -r file; do \
 			mkdir -p $(ROOT_DIR)/src/lib/$$(dirname $$file) && \
 			$(MPY_CROSS) -o $(ROOT_DIR)/src/lib/$${file%.py}.mpy $$file || exit 1; \
@@ -179,9 +180,10 @@ live-sync-mac: sync
 clean:
 	rm -rf $(CIRCUITPYTHON_LIBS_DIR)
 	rm -rf $(ROOT_DIR)/src/lib
-	rm -rf $(ROOT_DIR)/submodules/*/
 
-# Clean the device.
+# Clean the device. Refuse unless DEVICE is a mounted CircuitPython drive, and
+# keep boot_out.txt and the hidden files the host OS keeps on the drive.
 clean-device:
-	rm -rf $(DEVICE)/*
-	@echo "print(\"Hello World!\")" > $(DEVICE)/code.py
+	@test -n "$(DEVICE)" && test -f "$(DEVICE)/boot_out.txt" || { echo "DEVICE ($(DEVICE)) is not a mounted CircuitPython drive: it has no boot_out.txt. Mount the CardPuter and set DEVICE to its CIRCUITPY mount path, e.g. make sync DEVICE=/media/<user>/CIRCUITPY"; exit 1; }
+	find "$(DEVICE)/" -mindepth 1 -maxdepth 1 ! -name boot_out.txt ! -name ".*" -exec rm -rf {} +
+	@echo "print(\"Hello World!\")" > "$(DEVICE)/code.py"

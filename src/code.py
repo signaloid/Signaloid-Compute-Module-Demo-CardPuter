@@ -139,7 +139,9 @@ def value_to_bytes(value: str, double_precision: bool) -> bytes:
 
     :raises ValueError: when the value cannot be parsed.
 
-    :return: A single-precision float, or Ux binary data.
+    :return: A single-precision float, or Ux binary data. The Calculator
+             application turns a plain float into a Gaussian distribution
+             with that mean and a standard deviation of 0.1.
     """
     if "Ux" in value:
         distribution = DistributionalValue.parse(value)
